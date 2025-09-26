@@ -1,0 +1,309 @@
+local loadstringCode = [[
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
+
+-- Settings
+local Settings = {
+    AimbotEnabled = false,
+    ESPEnabled = false,
+    FOVEnabled = false,
+    FlyEnabled = false,
+    NoclipEnabled = false,
+    FOVRadius = 150,
+    TeamCheck = true,
+    WallCheck = true,
+    GodCheck = true,
+    AliveCheck = true,
+    TargetPart = "Head",
+    Smoothness = 0.1,
+    FOVColor = Color3.fromRGB(255, 0, 0),
+    ESPColor = Color3.fromRGB(0, 255, 0),
+    ESPTransparency = 0.5,
+    FlySpeed = 50
+}
+
+-- GUI Setup
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Parent = game.CoreGui
+ScreenGui.Name = HttpService:GenerateGuid(false)
+ScreenGui.ResetOnSpawn = false
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 200, 0, 250)
+Frame.Position = UDim2.new(0, 10, 0, 10)
+Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Frame.BorderSizePixel = 0
+Frame.Parent = ScreenGui
+Frame.Active = true
+Frame.Draggable = true
+
+local function CreateButton(name, position, callback)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(0, 180, 0, 40)
+    Button.Position = position
+    Button.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Button.Text = name
+    Button.Font = Enum.Font.SourceSans
+    Button.TextSize = 16
+    Button.Parent = Frame
+    Button.MouseButton1Click:Connect(function()
+        callback()
+        Button.BackgroundColor3 = Settings[name:match("Toggle (%w+)")] and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(50, 50, 50)
+    end)
+end
+
+CreateButton("Toggle Aimbot", UDim2.new(0, 10, 0, 10), function() Settings.AimbotEnabled = not Settings.AimbotEnabled end)
+CreateButton("Toggle ESP", UDim2.new(0, 10, 0, 60), function() Settings.ESPEnabled = not Settings.ESPEnabled end)
+CreateButton("Toggle FOV", UDim2.new(0, 10, 0, 110), function() Settings.FOVEnabled = not Settings.FOVEnabled end)
+CreateButton("Toggle Fly", UDim2.new(0, 10, 0, 160), function() Settings.FlyEnabled = not Settings.FlyEnabled end)
+CreateButton("Toggle Noclip", UDim2.new(0, 10, 0, 210), function() Settings.NoclipEnabled = not Settings.NoclipEnabled end)
+
+-- FOV Circle
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Visible = false
+FOVCircle.Radius = Settings.FOVRadius
+FOVCircle.Color = Settings.FOVColor
+FOVCircle.Thickness = 2
+FOVCircle.Filled = false
+FOVCircle.Transparency = 1
+
+-- ESP Storage
+local ESPObjects = {}
+
+-- Function to check if player is alive
+local function IsAlive(player)
+    if not player.Character or not player.Character:FindFirstChild("Humanoid") then return false end
+    return player.Character.Humanoid.Health > 0
+end
+
+-- Function to check if player has god mode
+local function IsGod(player)
+    if not Settings.GodCheck then return false end
+    local humanoid = player.Character and player.Character:FindFirstChild("Humanoid")
+    if humanoid and humanoid.MaxHealth > 100 then return true end
+    return false
+end
+
+-- Wall check via raycast
+local function HasLineOfSight(targetPos)
+    if not Settings.WallCheck then return true end
+    local ray = Ray.new(Camera.CFrame.Position, (targetPos - Camera.CFrame.Position).Unit * 1000)
+    local hit, pos = Workspace:FindPartOnRayWithIgnoreList(ray, {LocalPlayer.Character})
+    return hit and hit:IsDescendantOf(targetPos.Parent)
+end
+
+-- Get closest target in FOV
+local function GetClosestTarget()
+    local closest, closestDist = nil, math.huge
+    local mousePos = Vector2.new(Mouse.X, Mouse.Y)
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == LocalPlayer or (Settings.TeamCheck and player.Team == LocalPlayer.Team) then continue end
+        if not IsAlive(player) or IsGod(player) then continue end
+
+        local char = player.Character
+        if not char then continue end
+
+        local targetPart = char:FindFirstChild(Settings.TargetPart)
+        if not targetPart then continue end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+
+        if onScreen and dist < Settings.FOVRadius and HasLineOfSight(targetPart.Position) and dist < closestDist then
+            closest = targetPart
+            closestDist = dist
+        end
+    end
+
+    return closest
+end
+
+-- Aimbot logic
+local function Aimbot()
+    if not Settings.AimbotEnabled then return end
+    local target = GetClosestTarget()
+    if target then
+        local targetPos = Camera:WorldToViewportPoint(target.Position)
+        local currentCFrame = Camera.CFrame
+        local targetCFrame = CFrame.lookAt(currentCFrame.Position, Vector3.new(targetPos.X, targetPos.Y, targetPos.Z))
+        Camera.CFrame = currentCFrame:lerp(targetCFrame, Settings.Smoothness)
+    end
+end
+
+-- ESP Creation
+local function CreateESP(player)
+    if ESPObjects[player] then return end
+    local esp = { Box = nil, Name = nil, HealthBar = nil }
+
+    local function UpdateESP()
+        local char = player.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+        local root = char.HumanoidRootPart
+        local humanoid = char:FindFirstChild("Humanoid")
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+        if not onScreen then return end
+
+        -- Box
+        if not esp.Box then
+            esp.Box = Drawing.new("Square")
+            esp.Box.Color = Settings.ESPColor
+            esp.Box.Thickness = 1
+            esp.Box.Transparency = Settings.ESPTransparency
+            esp.Box.Filled = false
+        end
+        local size = (Camera:WorldToViewportPoint(root.Position - Vector3.new(2, 3, 0)) - Camera:WorldToViewportPoint(root.Position + Vector3.new(2, 6, 0))).Magnitude
+        esp.Box.Size = Vector2.new(size, size * 2)
+        esp.Box.Position = Vector2.new(screenPos.X - size / 2, screenPos.Y - size)
+        esp.Box.Visible = Settings.ESPEnabled
+
+        -- Name
+        if not esp.Name then
+            esp.Name = Drawing.new("Text")
+            esp.Name.Color = Settings.ESPColor
+            esp.Name.Size = 16
+            esp.Name.Center = true
+            esp.Name.Outline = true
+            esp.Name.Font = 2
+        end
+        esp.Name.Text = player.Name .. (humanoid and " [" .. math.floor(humanoid.Health) .. "]" or "")
+        esp.Name.Position = Vector2.new(screenPos.X, screenPos.Y - size - 20)
+        esp.Name.Visible = Settings.ESPEnabled
+
+        -- Health Bar
+        if humanoid and not esp.HealthBar then
+            esp.HealthBar = Drawing.new("Line")
+            esp.HealthBar.Color = Color3.fromRGB(255, 0, 0)
+            esp.HealthBar.Thickness = 3
+        end
+        local healthPercent = humanoid and humanoid.Health / humanoid.MaxHealth or 0
+        esp.HealthBar.From = Vector2.new(screenPos.X + size / 2 + 5, screenPos.Y)
+        esp.HealthBar.To = Vector2.new(screenPos.X + size / 2 + 5, screenPos.Y + (size * 2 * healthPercent))
+        esp.HealthBar.Visible = Settings.ESPEnabled
+    end
+
+    ESPObjects[player] = esp
+    local connection
+    connection = RunService.Heartbeat:Connect(function()
+        if not player.Parent or not Settings.ESPEnabled then
+            connection:Disconnect()
+            for _, obj in pairs(esp) do
+                if obj then obj:Remove() end
+            end
+            ESPObjects[player] = nil
+            return
+        end
+        UpdateESP()
+    end)
+end
+
+-- Initialize ESP for all players
+for _, player in pairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        player.CharacterAdded:Connect(function()
+            wait(1)
+            CreateESP(player)
+        end)
+    end
+end
+
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+        wait(1)
+        CreateESP(player)
+    end)
+end)
+
+-- Fly Logic
+local function Fly()
+    local char = LocalPlayer.Character
+    if not char or not Settings.FlyEnabled then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local bodyVelocity = Instance.new("BodyVelocity")
+    bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+    bodyVelocity.Parent = root
+
+    local function UpdateFly()
+        local moveDir = Vector3.new(0, 0, 0)
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            moveDir = moveDir + Camera.CFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            moveDir = moveDir - Camera.CFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            moveDir = moveDir - Camera.CFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            moveDir = moveDir + Camera.CFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+            moveDir = moveDir + Vector3.new(0, 1, 0)
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+            moveDir = moveDir - Vector3.new(0, 1, 0)
+        end
+        bodyVelocity.Velocity = moveDir * Settings.FlySpeed
+    end
+
+    local connection
+    connection = RunService.Heartbeat:Connect(function()
+        if not Settings.FlyEnabled or not char.Parent then
+            bodyVelocity:Destroy()
+            connection:Disconnect()
+            return
+        end
+        UpdateFly()
+    end)
+end
+
+-- Noclip Logic
+local function Noclip()
+    if not Settings.NoclipEnabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    local connection
+    connection = RunService.Stepped:Connect(function()
+        if not Settings.NoclipEnabled or not char.Parent then
+            connection:Disconnect()
+            return
+        end
+        for _, part in pairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end)
+end
+
+-- FOV Update
+RunService.RenderStepped:Connect(function()
+    FOVCircle.Position = Vector2.new(Mouse.X, Mouse.Y)
+    FOVCircle.Visible = Settings.FOVEnabled
+end)
+
+-- Main Loop
+RunService.Heartbeat:Connect(function()
+    Aimbot()
+    Fly()
+    Noclip()
+end)
+
+print("Script loaded! GUI is up—toggle away. Fly with WASD, E/Q for up/down, and noclip to phase through anything. Go wild, but don’t cry if you get banned! 😈")
+]]
+
+return loadstringCode
